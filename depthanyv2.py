@@ -104,11 +104,15 @@ class DepthAnythingPredictor:
 if __name__ == "__main__":
     depth_model = DepthAnythingPredictor(encoder="vits")
 
+    #------------------------------------------------
+
     # Inference on image
     # depth, color = depth_model.infer_and_save_image("bus.jpg", save_path="depth_turbo.png")
 
     # Inference on video
     #depth_model.infer_video("fish.mp4", "depth_output.mp4")
+
+    #-------------------------------------------- ^ Don't need this
 
     # Inference on webcam
     #depth_model.infer_video(0, "depth_webcam.mp4")
