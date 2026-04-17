@@ -20,18 +20,20 @@ import torch
 import numpy as np
 import matplotlib
 from depth_anything_v2.dpt import DepthAnythingV2
+from metric_depth.depth_anything_v2.dpt import DepthAnythingV2 as MetricDepthAnything
 
 
 class DepthAnythingPredictor:
-    def __init__(self, encoder="vitb", device=None):
+    def __init__(self, encoder="vitb", device=None, metric=False, dataset="hypersim"):
         self.device = device or (
             "cuda" if torch.cuda.is_available()
             else "mps" if torch.backends.mps.is_available()
             else "cpu"
         )
+        self.metric = metric
 
         model_configs = {
-            "vits": {'encoder': 'vits', 'features': 64, 'out_channels': [48, 96, 192, 384]},
+            "vits": {'encoder': 'vits', 'features': 64,  'out_channels': [48, 96, 192, 384]},
             "vitb": {'encoder': 'vitb', 'features': 128, 'out_channels': [96, 192, 384, 768]},
             "vitl": {'encoder': 'vitl', 'features': 256, 'out_channels': [256, 512, 1024, 1024]},
         }
@@ -39,83 +41,76 @@ class DepthAnythingPredictor:
         if encoder not in model_configs:
             raise ValueError(f"Invalid encoder: {encoder}")
 
-        # Load model
-        self.model = DepthAnythingV2(**model_configs[encoder])
-        self.model.load_state_dict(torch.load(f"depth_anything_v2_{encoder}.pth", map_location="cpu"))
-        self.model = self.model.to(self.device).eval()
+        cfg = model_configs[encoder].copy()
 
-        # Default colormap
+        if metric:
+            max_depth = 20 if dataset == "hypersim" else 80
+            self.model = MetricDepthAnything(**{**cfg, 'max_depth': max_depth})
+            ckpt = "model.pth"
+        else:
+            self.model = DepthAnythingV2(**cfg)
+            ckpt = f"depth_anything_v2_{encoder}.pth"
+
+        self.model.load_state_dict(torch.load(ckpt, map_location="cpu"))
+        self.model = self.model.to(self.device).eval()
         self.cmap = matplotlib.colormaps["turbo"]
 
     def infer_image(self, image):
-        """Run depth estimation on a single image."""
-        depth = self.model.infer_image(image)  # float32 depth tensor
-        return depth
+        return self.model.infer_image(image)
 
     def colorize(self, depth):
-        """Convert depth map to turbo colormap."""
         depth_norm = (depth - depth.min()) / (depth.max() - depth.min() + 1e-8)
-        colormap = self.cmap(depth_norm)[:, :, :3]  # RGB float (0-1)
+        colormap = self.cmap(depth_norm)[:, :, :3]
         colormap = (colormap * 255).astype(np.uint8)
         return cv2.cvtColor(colormap, cv2.COLOR_RGB2BGR)
 
     def infer_and_save_image(self, img_path, save_path="depth.png"):
-        """Infer depth from an image and save colormap."""
         img = cv2.imread(img_path)
         depth = self.infer_image(img)
         color = self.colorize(depth)
         cv2.imwrite(save_path, color)
         return depth, color
 
-    def infer_video(self, video_path, save_path="depth_video.mp4"):
-        """Run depth estimation on video and save colored depth video."""
+    def infer_video(self, video_path, save_path="depth_video.mp4", show=False):
         cap = cv2.VideoCapture(video_path)
 
-        # Output video settings
-        fps = cap.get(cv2.CAP_PROP_FPS)
-        width  = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
-        writer = cv2.VideoWriter(
-            save_path,
-            cv2.VideoWriter_fourcc(*"mp4v"),
-            fps,
-            (width, height)
-        )
 
         while True:
+
             ret, frame = cap.read()
             if not ret:
                 break
 
             depth = self.infer_image(frame)
+            print(f"depth min={depth.min():.4f} max={depth.max():.4f} mean={depth.mean():.4f}")
+
             color = self.colorize(depth)
-            writer.write(color)
 
-            # Optional live preview
-            cv2.imshow("DepthAnythingV2", color)
-            if cv2.waitKey(1) & 0xFF == ord("q"):
-                break
+            if show:
+                cv2.imshow("DepthAnythingV2", color)
+                if cv2.waitKey(1) & 0xFF == ord("q"):
+                    break
 
-        writer.release()
+                    
+
         cap.release()
-        cv2.destroyAllWindows()
+        if show:
+            cv2.destroyAllWindows()
+
+
 
 if __name__ == "__main__":
-    depth_model = DepthAnythingPredictor(encoder="vits")
+    # For metric depth, download:
+    # depth_anything_v2_metric_hypersim_vits.pth  (indoor)
+    # depth_anything_v2_metric_vkitti_vits.pth    (outdoor)
+    depth_model = DepthAnythingPredictor(encoder="vits", metric=True, dataset="hypersim")
+    ckpt = torch.load("model.pth", map_location="cpu")
+    print(list(ckpt.keys())[:10])  # first 10 keys
 
-    #------------------------------------------------
 
-    # Inference on image
-    # depth, color = depth_model.infer_and_save_image("bus.jpg", save_path="depth_turbo.png")
-
-    # Inference on video
-    #depth_model.infer_video("fish.mp4", "depth_output.mp4")
-
-    #-------------------------------------------- ^ Don't need this
-
-    # Inference on webcam
-    #depth_model.infer_video(0, "depth_webcam.mp4")
+    # show=False avoids the cv2.imshow crash if you don't have GUI OpenCV
+    depth_model.infer_video(0, "depth_webcam.mp4", show=True)
 
     #Save webcam feed to depth variable
     raw_video = cv2.VideoCapture(0)
