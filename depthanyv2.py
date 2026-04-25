@@ -19,6 +19,8 @@ import cv2
 import torch
 import numpy as np
 import matplotlib
+import winsound
+import time
 from depth_anything_v2.dpt import DepthAnythingV2
 from metric_depth.depth_anything_v2.dpt import DepthAnythingV2 as MetricDepthAnything
 
@@ -64,35 +66,53 @@ class DepthAnythingPredictor:
         colormap = (colormap * 255).astype(np.uint8)
         return cv2.cvtColor(colormap, cv2.COLOR_RGB2BGR)
 
-    def infer_and_save_image(self, img_path, save_path="depth.png"):
-        img = cv2.imread(img_path)
-        depth = self.infer_image(img)
-        color = self.colorize(depth)
-        cv2.imwrite(save_path, color)
-        return depth, color
-
-    def infer_video(self, video_path, save_path="depth_video.mp4", show=False):
+    def infer_video(self, video_path, show=False):
         cap = cv2.VideoCapture(video_path)
+        last_beep = 0
+        if not cap.isOpened():
+            print("Error: Could not open video source")
+            return
 
-
+        prevdepth = None
 
         while True:
-
             ret, frame = cap.read()
             if not ret:
+                print("Failed to grab frame")
                 break
 
             depth = self.infer_image(frame)
-            print(f"depth min={depth.min():.4f} max={depth.max():.4f} mean={depth.mean():.4f}")
 
             color = self.colorize(depth)
-
             if show:
                 cv2.imshow("DepthAnythingV2", color)
                 if cv2.waitKey(1) & 0xFF == ord("q"):
                     break
 
-                    
+            depth = 255.0 - (depth - depth.min()) / (depth.max() - depth.min()) * 255.0
+
+            # Center crop 240x240
+            h, w = depth.shape
+            cy, cx = h // 2, w // 2
+            depth = depth[cy-120:cy+120, cx-120:cx+120]
+
+            if prevdepth is not None:
+                velocity = depth - prevdepth
+                print(velocity)
+                
+                if (velocity < -60).any():
+                    if time.time() - last_beep > 3:
+                        winsound.Beep(500, 800)
+                        last_beep = time.time()
+
+            
+            if (depth > 250).any():
+                if time.time() - last_beep > 3:
+                    winsound.Beep(1000, 800)
+                    last_beep = time.time()
+            
+
+            prevdepth = depth.copy()
 
         cap.release()
         if show:
@@ -101,33 +121,14 @@ class DepthAnythingPredictor:
 
 
 if __name__ == "__main__":
-    # For metric depth, download:
-    # depth_anything_v2_metric_hypersim_vits.pth  (indoor)
-    # depth_anything_v2_metric_vkitti_vits.pth    (outdoor)
+
     depth_model = DepthAnythingPredictor(encoder="vits", metric=True, dataset="hypersim")
     ckpt = torch.load("model.pth", map_location="cpu")
     print(list(ckpt.keys())[:10])  # first 10 keys
 
+    winsound.Beep(1000, 200)
+    winsound.Beep(1000, 200)
 
     # show=False avoids the cv2.imshow crash if you don't have GUI OpenCV
-    depth_model.infer_video(0, "depth_webcam.mp4", show=True)
+    depth_model.infer_video(0, show=True)
 
-    #Save webcam feed to depth variable
-    raw_video = cv2.VideoCapture(0)
-    #output_width = frame_width
-    while raw_video.isOpened():
-        ret, raw_frame = raw_video.read()
-        if not ret:
-            break
-        
-        depth = depth_model.infer_image(raw_frame)
-        #print(depth)
-        
-        depth = (depth - depth.min()) / (depth.max() - depth.min()) * 255.0
-        depth = depth.astype(np.uint8)
-        print(depth)
-        velocity = prevdepth - depth 
-        prevdepth = depth
-
-    raw_video.release()
-    #out.release()
