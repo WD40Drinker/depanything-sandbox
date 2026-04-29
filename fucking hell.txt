@@ -1,5 +1,7 @@
-# PyTorch
-pip install "https://pypi.jetson-ai-lab.io/jp6/cu126/+f/ad9/a914891e6ebb0/torch-2.8.0-cp310-cp310-linux_aarch64.whl"
+# PyTorch 2.11.0
+pip3 install "https://pypi.jetson-ai-lab.io/jp6/cu126/+f/46b/b8b13f844b211/torch-2.11.0-cp310-cp310-linux_aarch64.whl"
 
-# TorchVision
-pip install "https://pypi.jetson-ai-lab.io/jp6/cu126/+f/f56/f81fa39854c4d/torchvision-0.23.0-cp310-cp310-linux_aarch64.whl"
+# TorchVision 0.26.0
+pip3 install "https://pypi.jetson-ai-lab.io/jp6/cu126/+f/d11/6f08d3d62417d/torchvision-0.26.0-cp310-cp310-linux_aarch64.whl"
+
+pip3 install "https://pypi.jetson-ai-lab.io/jp6/cu126/+f/de0/e745233b53045/opencv_contrib_python-4.12.0-cp310-cp310-linux_aarch64.whl"
