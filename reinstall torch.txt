@@ -8,3 +8,12 @@ bashfind / -name "libnvidia*" 2>/dev/null
 Share the output and I'll create the exact symlink.
 Step 4 — Verify
 bashpython3 -c "import torch; print(torch.__version__); print(torch.cuda.is_available())"
+
+
+
+ENCODE_LIB=$(find / -name "libnvidia-encode*" 2>/dev/null | head -1)
+echo "Found: $ENCODE_LIB"
+sudo ln -sf $ENCODE_LIB /usr/local/cuda/lib64/libnvidia-encode.so.1
+sudo ln -sf $ENCODE_LIB /usr/lib/aarch64-linux-gnu/libnvidia-encode.so.1
+sudo ldconfig
+python3 -c "import torch; print(torch.cuda.is_available())"
