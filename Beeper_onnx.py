@@ -42,6 +42,7 @@ class TRTDepthPredictor:
 
     def build_engine(self, onnx_path):
         builder = trt.Builder(TRT_LOGGER)
+
         network = builder.create_network(
             1 << int(trt.NetworkDefinitionCreationFlag.EXPLICIT_BATCH)
         )
@@ -54,13 +55,19 @@ class TRTDepthPredictor:
                 raise RuntimeError("Failed to parse ONNX")
 
         config = builder.create_builder_config()
-        config.set_memory_pool_limit(trt.MemoryPoolType.WORKSPACE, 1 << 28)  # 256MB
+        config.set_memory_pool_limit(trt.MemoryPoolType.WORKSPACE, 1 << 26)  # 256MB
 
-        # Jetson Nano supports FP16
         if builder.platform_has_fast_fp16:
             config.set_flag(trt.BuilderFlag.FP16)
 
-        return builder.build_engine(network, config)
+        # ✅ NEW API
+        serialized_engine = builder.build_serialized_network(network, config)
+
+        if serialized_engine is None:
+            raise RuntimeError("Failed to build serialized engine")
+
+        runtime = trt.Runtime(TRT_LOGGER)
+        return runtime.deserialize_cuda_engine(serialized_engine)
 
     def _allocate_buffers(self):
         inputs, outputs, bindings = [], [], []
