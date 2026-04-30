@@ -55,12 +55,27 @@ class TRTDepthPredictor:
                 raise RuntimeError("Failed to parse ONNX")
 
         config = builder.create_builder_config()
-        config.set_memory_pool_limit(trt.MemoryPoolType.WORKSPACE, 1 << 26)  # 256MB
+        config.set_memory_pool_limit(trt.MemoryPoolType.WORKSPACE, 1 << 28)
 
         if builder.platform_has_fast_fp16:
             config.set_flag(trt.BuilderFlag.FP16)
 
-        # ✅ NEW API
+        # ✅ FIX: create optimization profile
+        profile = builder.create_optimization_profile()
+
+        input_name = network.get_input(0).name
+
+        # Lock shape (no dynamic behavior)
+        profile.set_shape(
+            input_name,
+            (1, 3, 518, 518),  # min
+            (1, 3, 518, 518),  # opt
+            (1, 3, 518, 518)   # max
+        )
+
+        config.add_optimization_profile(profile)
+
+        # Build
         serialized_engine = builder.build_serialized_network(network, config)
 
         if serialized_engine is None:
