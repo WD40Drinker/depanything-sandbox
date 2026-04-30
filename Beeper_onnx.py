@@ -3,112 +3,39 @@ import numpy as np
 import matplotlib
 import time
 import os
-import tensorrt as trt
-import pycuda.driver as cuda
-import pycuda.autoinit  # ✅ handles CUDA context automatically
-#import winsound
-
-TRT_LOGGER = trt.Logger(trt.Logger.WARNING)
+import onnxruntime as ort
 
 def beep(freq=1000, duration=800):
     os.system(f'beep -f {freq} -l {duration}')
 
 
-class TRTDepthPredictor:
+# =========================================================
+# DEPTH ANYTHING (ONNX ONLY)
+# =========================================================
+class ONNXDepthPredictor:
     def __init__(self,
-                 onnx_path="NYUmodel.onnx",
-                 engine_path="NYUmodel.trt",
-                 input_size=(518, 518)):
+                 onnx_path="depth_anything.onnx",
+                 input_size=(224, 224)):
 
         self.input_size = input_size
         self.cmap = matplotlib.colormaps["turbo"]
 
-        # ✅ Build engine if not exists
-        if not os.path.exists(engine_path):
-            print("Building TensorRT engine from ONNX...")
-            self.engine = self.build_engine(onnx_path)
-            with open(engine_path, "wb") as f:
-                f.write(self.engine.serialize())
-        else:
-            print("Loading existing TensorRT engine...")
-            with open(engine_path, "rb") as f, trt.Runtime(TRT_LOGGER) as runtime:
-                self.engine = runtime.deserialize_cuda_engine(f.read())
+        print("[INFO] Loading ONNX model...")
 
-        if self.engine is None:
-            raise RuntimeError("Failed to load/build TensorRT engine")
-
-        self.context = self.engine.create_execution_context()
-        self.inputs, self.outputs, self.bindings, self.stream = self._allocate_buffers()
-
-    def build_engine(self, onnx_path):
-        builder = trt.Builder(TRT_LOGGER)
-
-        network = builder.create_network(
-            1 << int(trt.NetworkDefinitionCreationFlag.EXPLICIT_BATCH)
-        )
-        parser = trt.OnnxParser(network, TRT_LOGGER)
-
-        with open(onnx_path, "rb") as f:
-            if not parser.parse(f.read()):
-                for i in range(parser.num_errors):
-                    print(parser.get_error(i))
-                raise RuntimeError("Failed to parse ONNX")
-
-        config = builder.create_builder_config()
-        config.set_memory_pool_limit(trt.MemoryPoolType.WORKSPACE, 1 << 28)
-
-        if builder.platform_has_fast_fp16:
-            config.set_flag(trt.BuilderFlag.FP16)
-
-        # ✅ FIX: create optimization profile
-        profile = builder.create_optimization_profile()
-
-        input_name = network.get_input(0).name
-
-        # Lock shape (no dynamic behavior)
-        profile.set_shape(
-            input_name,
-            (1, 3, 518, 518),  # min
-            (1, 3, 518, 518),  # opt
-            (1, 3, 518, 518)   # max
+        self.session = ort.InferenceSession(
+            onnx_path,
+            providers=["CPUExecutionProvider"]  # safest for Jetson Nano
         )
 
-        config.add_optimization_profile(profile)
+        self.input_name = self.session.get_inputs()[0].name
+        self.output_name = self.session.get_outputs()[0].name
 
-        # Build
-        serialized_engine = builder.build_serialized_network(network, config)
-
-        if serialized_engine is None:
-            raise RuntimeError("Failed to build serialized engine")
-
-        runtime = trt.Runtime(TRT_LOGGER)
-        return runtime.deserialize_cuda_engine(serialized_engine)
-
-    def _allocate_buffers(self):
-        inputs, outputs, bindings = [], [], []
-        stream = cuda.Stream()
-
-        for i in range(self.engine.num_io_tensors):
-            name = self.engine.get_tensor_name(i)
-            dtype = trt.nptype(self.engine.get_tensor_dtype(name))
-
-            shape = tuple(self.context.get_tensor_shape(name))
-            size = int(np.prod(shape))
-
-            host_mem = cuda.pagelocked_empty(size, dtype)
-            device_mem = cuda.mem_alloc(host_mem.nbytes)
-
-            bindings.append(int(device_mem))
-
-            if self.engine.get_tensor_mode(name) == trt.TensorIOMode.INPUT:
-                inputs.append({"host": host_mem, "device": device_mem, "name": name})
-            else:
-                outputs.append({"host": host_mem, "device": device_mem, "name": name})
-
-        return inputs, outputs, bindings, stream
-
-    def _preprocess(self, frame):
+    # =====================================================
+    # PREPROCESS
+    # =====================================================
+    def preprocess(self, frame):
         h, w = self.input_size
+
         img = cv2.resize(frame, (w, h))
         img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
 
@@ -118,39 +45,35 @@ class TRTDepthPredictor:
         img = (img - mean) / std
         img = img.transpose(2, 0, 1)
 
-        return np.ascontiguousarray(img[None])
+        return np.expand_dims(img, 0).astype(np.float32)
 
-    def _do_inference(self):
-        for inp in self.inputs:
-            cuda.memcpy_htod_async(inp["device"], inp["host"], self.stream)
-            self.context.set_tensor_address(inp["name"], int(inp["device"]))
+    # =====================================================
+    # INFERENCE
+    # =====================================================
+    def infer(self, frame):
+        inp = self.preprocess(frame)
 
-        for out in self.outputs:
-            self.context.set_tensor_address(out["name"], int(out["device"]))
+        depth = self.session.run(
+            [self.output_name],
+            {self.input_name: inp}
+        )[0]
 
-        self.context.execute_async_v3(stream_handle=self.stream.handle)
+        return depth[0]
 
-        for out in self.outputs:
-            cuda.memcpy_dtoh_async(out["host"], out["device"], self.stream)
-
-        self.stream.synchronize()
-
-    def infer_image(self, frame):
-        tensor = self._preprocess(frame)
-        np.copyto(self.inputs[0]["host"], tensor.ravel())
-        self._do_inference()
-
-        h, w = self.input_size
-        return self.outputs[0]["host"].reshape(h, w).copy()
-
+    # =====================================================
+    # COLORIZE
+    # =====================================================
     def colorize(self, depth):
-        depth_norm = (depth - depth.min()) / (depth.max() - depth.min() + 1e-8)
-        colormap = self.cmap(depth_norm)[:, :, :3]
-        colormap = (colormap * 255).astype(np.uint8)
-        return cv2.cvtColor(colormap, cv2.COLOR_RGB2BGR)
+        d = (depth - depth.min()) / (depth.max() - depth.min() + 1e-8)
+        col = self.cmap(d)[:, :, :3]
+        return (col * 255).astype(np.uint8)
 
-    def infer_video(self, video_path, d, v, show=False):
-        cap = cv2.VideoCapture(video_path)
+    # =====================================================
+    # 🔥 SAME VIDEO FUNCTION YOU WANTED
+    # =====================================================
+    def infer_video(self, video_source, d, v, show=False):
+        cap = cv2.VideoCapture(video_source)
+
         last_beep = 0
         prevdepth = None
 
@@ -163,26 +86,35 @@ class TRTDepthPredictor:
             if not ret:
                 break
 
-            depth = self.infer_image(frame)
+            depth = self.infer(frame)
 
+            # ---------------- display ----------------
             if show:
-                cv2.imshow("Depth TRT", self.colorize(depth))
+                cv2.imshow("Depth ONNX", self.colorize(depth))
                 if cv2.waitKey(1) & 0xFF == ord("q"):
                     break
 
-            depth_disp = 255.0 - (depth - depth.min()) / (depth.max() - depth.min() + 1e-8) * 255.0
+            # ---------------- processing ----------------
+            depth_disp = 255.0 - (
+                (depth - depth.min()) /
+                (depth.max() - depth.min() + 1e-8)
+            ) * 255.0
 
             h, w = depth_disp.shape
             cy, cx = h // 2, w // 2
+
             crop = depth_disp[cy-120:cy+120, cx-120:cx+120]
 
+            # ---------------- velocity check ----------------
             if prevdepth is not None:
                 velocity = -(crop - prevdepth)
+
                 if (velocity > v).any() and time.time() - last_beep > 3:
                     beep(500, 800)
                     print("velocity warning")
                     last_beep = time.time()
 
+            # ---------------- distance check ----------------
             if (crop > d).any() and time.time() - last_beep > 3:
                 beep(1000, 800)
                 print("distance warning")
@@ -195,14 +127,20 @@ class TRTDepthPredictor:
             cv2.destroyAllWindows()
 
 
+# =========================================================
+# MAIN
+# =========================================================
 if __name__ == "__main__":
     beep(1000, 800)
-    beep(1000, 800)
 
-    predictor = TRTDepthPredictor(
-        onnx_path="NYUmodel.onnx",
-        engine_path="NYUmodel.trt",
-        input_size=(518, 518),
+    predictor = ONNXDepthPredictor(
+        onnx_path="depth_anything.onnx",
+        input_size=(224, 224)
     )
 
-    predictor.infer_video(0, d=252, v=200, show=True)
+    predictor.infer_video(
+        video_source=0,
+        d=252,
+        v=200,
+        show=True
+    )
