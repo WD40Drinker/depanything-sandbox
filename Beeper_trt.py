@@ -3,6 +3,8 @@ import numpy as np
 import matplotlib
 import winsound
 import time
+import os
+
 
 import tensorrt as trt
 import pycuda.driver as cuda
@@ -12,6 +14,10 @@ cuda.init()
 cuda_ctx = cuda.Device(0).make_context()
 
 TRT_LOGGER = trt.Logger(trt.Logger.WARNING)
+
+def beep(freq=1000, duration=800):
+    os.system(f'beep -f {freq} -l {duration}')
+
 
 
 class TRTDepthPredictor:
@@ -98,7 +104,7 @@ class TRTDepthPredictor:
         colormap   = self.cmap(depth_norm)[:, :, :3]
         colormap   = (colormap * 255).astype(np.uint8)
         return cv2.cvtColor(colormap, cv2.COLOR_RGB2BGR)
-
+    
     def infer_video(self, video_path, d, v, show=False):
         cap = cv2.VideoCapture(video_path)
         last_beep = 0
@@ -132,13 +138,13 @@ class TRTDepthPredictor:
                 velocity = -(crop - prevdepth)
                 if (velocity > v).any():
                     if time.time() - last_beep > 3:
-                        winsound.Beep(500, 800)
+                        beep(500, 800)
                         last_beep = time.time()
                         print("velocity warning")
 
             if (crop > d).any():
                 if time.time() - last_beep > 3:
-                    winsound.Beep(1000, 800)
+                    beep(1000, 800)
                     last_beep = time.time()
                     print("distance warning")
 
@@ -151,8 +157,8 @@ class TRTDepthPredictor:
 
 if __name__ == "__main__":
     try:
-        winsound.Beep(1000, 200)
-        winsound.Beep(1000, 200)
+        beep(1000, 800)
+        beep(1000, 800)
 
         predictor = TRTDepthPredictor(
             engine_path = "NYUmodel.trt",
